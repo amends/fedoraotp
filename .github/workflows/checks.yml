@@ -13,11 +13,7 @@ jobs:
         run: python3 -m py_compile bin/otp-clipboard-listener
       - name: Shell syntax
         run: bash -n install.sh scripts/uninstall.sh
-      - name: Extractor smoke tests
+      - name: Extractor tests
         run: |
-          test "$(./bin/otp-clipboard-listener --extract 'Your verification code is 123456')" = "123456"
-          test "$(./bin/otp-clipboard-listener --extract 'OTP for 2310990533 is 4279')" = "4279"
-          if ./bin/otp-clipboard-listener --extract 'Your order 123456 shipped'; then
-            echo 'false positive on order notification' >&2
-            exit 1
-          fi
+          python3 -m pip install pytest
+          python3 -m pytest tests/test_extractor.py -q

@@ -108,7 +108,12 @@ if [ "$ENABLE_SERVICE" -eq 1 ]; then
   echo "Enabling user service..."
   if [ "$DRY_RUN" -eq 0 ]; then
     systemctl --user daemon-reload
-    systemctl --user enable --now "$SERVICE_NAME"
+    if systemctl --user is-active --quiet "$SERVICE_NAME"; then
+      systemctl --user restart "$SERVICE_NAME"
+    else
+      systemctl --user enable --now "$SERVICE_NAME"
+    fi
+    systemctl --user enable "$SERVICE_NAME" >/dev/null
   fi
 fi
 

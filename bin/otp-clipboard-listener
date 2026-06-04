@@ -30,12 +30,15 @@ KEYWORD_RE = re.compile(
     r"security|login|sign[- ]?in|2fa|two[- ]?factor|code|passcode)\b"
 )
 
-# Common OTP shapes: 4-8 digits, optionally separated by space/dash.
+# Common OTP shapes: 4-10 digits, optionally separated by space/dash.
+# Some banks use longer numeric login codes; keep keyword/context gating strict
+# enough that generic order/tracking numbers do not get copied.
 CODE_PATTERNS = [
-    re.compile(r"(?i)\b(?:otp|code|passcode|verification code|security code|authentication code)\D{0,60}((?<!\d)(?:\d[ -]?){4,8}(?!\d))\b"),
-    re.compile(r"(?i)\b((?<!\d)(?:\d[ -]?){4,8}(?!\d))\D{0,30}(?:is|as)?\D{0,10}(?:your|the)?\D{0,10}(?:otp|code|passcode|verification)\b"),
+    re.compile(r"(?i)\b(?:is|:|=)\D{0,10}((?<!\d)(?:\d[ -]?){4,10}(?!\d))\b"),
+    re.compile(r"(?i)\b(?:otp|code|passcode|verification code|security code|authentication code|login code)\D{0,120}((?<!\d)(?:\d[ -]?){4,10}(?!\d))\b"),
+    re.compile(r"(?i)\b((?<!\d)(?:\d[ -]?){4,10}(?!\d))\D{0,30}(?:is|as)?\D{0,10}(?:your|the)?\D{0,10}(?:otp|code|passcode|verification)\b"),
 ]
-FALLBACK_CODE_RE = re.compile(r"(?<!\d)((?:\d[ -]?){4,8})(?!\d)")
+FALLBACK_CODE_RE = re.compile(r"(?<!\d)((?:\d[ -]?){4,10})(?!\d)")
 
 # Avoid obvious non-OTP numeric chunks.
 BAD_CONTEXT_RE = re.compile(r"(?i)\b(order|tracking|invoice|total|amount|price|phone|call|address|zip)\b")
@@ -108,7 +111,7 @@ def extract_otp(text: str) -> str | None:
     for pat in CODE_PATTERNS:
         for match in pat.finditer(compact):
             code = normalize_code(match.group(1))
-            if 4 <= len(code) <= 8:
+            if 4 <= len(code) <= 10:
                 start = max(0, match.start() - 30)
                 end = min(len(compact), match.end() + 30)
                 context = compact[start:end]

@@ -17,7 +17,7 @@ It is basically a local, inspectable Linux version of the "2FHey" workflow: no c
 ## Features
 
 - Watches GNOME desktop notifications on the session D-Bus.
-- Extracts likely OTP/security/verification codes.
+- Extracts likely OTP/security/verification codes, including common 4–10 digit numeric codes when the notification has login/code/security wording.
 - Copies only the code to the clipboard with `wl-copy`.
 - Runs as a normal user-level `systemd --user` service.
 - Adds an optional GNOME top-bar indicator: `OTP ●`.

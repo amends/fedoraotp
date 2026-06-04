@@ -146,8 +146,19 @@ def extract_otp(text: str) -> str | None:
     return None
 
 
-STRING_LINE_RE = re.compile(r'^\s+string "(.*)"$')
+STRING_START_RE = re.compile(r'^\s+string "(.*)$')
 METHOD_LINE_RE = re.compile(r"method call .*interface=org\.freedesktop\.Notifications; member=Notify")
+
+
+def ends_with_unescaped_quote(s: str) -> bool:
+    if not s.endswith('"'):
+        return False
+    backslashes = 0
+    idx = len(s) - 2
+    while idx >= 0 and s[idx] == "\\":
+        backslashes += 1
+        idx -= 1
+    return backslashes % 2 == 0
 
 
 def unescape_dbus_string(s: str) -> str:
@@ -159,12 +170,44 @@ def unescape_dbus_string(s: str) -> str:
         return s.replace(r'\"', '"').replace(r"\\", "\\")
 
 
-def parse_notify_block(lines: list[str]) -> dict[str, str] | None:
+def iter_dbus_strings(lines: list[str]) -> list[str]:
+    """Extract dbus-monitor string arguments, including multi-line strings.
+
+    dbus-monitor prints notification bodies containing newlines like:
+
+        string "messages.google.com
+
+    followed by raw continuation lines until the closing quote. A single-line
+    regex silently dropped those bodies, so Chrome/Messages OTPs were missed.
+    """
     strings: list[str] = []
-    for line in lines:
-        m = STRING_LINE_RE.match(line.rstrip("\n"))
-        if m:
-            strings.append(unescape_dbus_string(m.group(1)))
+    current: list[str] | None = None
+
+    for raw_line in lines:
+        line = raw_line.rstrip("\n")
+        if current is not None:
+            if ends_with_unescaped_quote(line):
+                current.append(line[:-1])
+                strings.append(unescape_dbus_string("\n".join(current)))
+                current = None
+            else:
+                current.append(line)
+            continue
+
+        m = STRING_START_RE.match(line)
+        if not m:
+            continue
+        value = m.group(1)
+        if ends_with_unescaped_quote(value):
+            strings.append(unescape_dbus_string(value[:-1]))
+        else:
+            current = [value]
+
+    return strings
+
+
+def parse_notify_block(lines: list[str]) -> dict[str, str] | None:
+    strings = iter_dbus_strings(lines)
     # Notify(app_name, replaces_id, app_icon, summary, body, actions, hints, expire_timeout)
     if len(strings) < 4:
         return None

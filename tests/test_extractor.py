@@ -54,3 +54,30 @@ def test_ignores_order_number_even_with_code_word_in_product_copy():
     text = "Your order code 123456 shipped and tracking will update soon."
 
     assert otp.extract_otp(text) is None
+
+
+def test_parse_notify_block_handles_multiline_chrome_message_body():
+    lines = [
+        "method call time=1780607553.579405 sender=:1.137 -> destination=org.freedesktop.Notifications serial=161 path=/org/freedesktop/Notifications; interface=org.freedesktop.Notifications; member=Notify\n",
+        '   string "Google Chrome"\n',
+        "   uint32 0\n",
+        '   string "file:///tmp/com.google.Chrome.scoped_dir.KzNkm4/logo.png"\n',
+        '   string "Katherine Little"\n',
+        '   string "messages.google.com\n',
+        "\n",
+        'Venmo: 742021 is your code for login. Don\'t share your code."\n',
+        "   array [\n",
+        '      string "default"\n',
+        '      string "Activate"\n',
+        "   ]\n",
+        "   int32 -1\n",
+    ]
+
+    info = otp.parse_notify_block(lines)
+
+    assert info == {
+        "app": "Google Chrome",
+        "summary": "Katherine Little",
+        "body": "messages.google.com\n\nVenmo: 742021 is your code for login. Don't share your code.",
+    }
+    assert otp.extract_otp("\n".join(info.values())) == "742021"

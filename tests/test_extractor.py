@@ -32,6 +32,24 @@ def test_extracts_phone_context_otp_not_the_phone_number():
     assert otp.extract_otp(text) == "4279"
 
 
+def test_extracts_capital_one_temporary_sign_in_code_before_digits():
+    text = (
+        "Capital One won't call you for this code. The temporary code you requested "
+        "to sign-in is 654321. Please don't share this code with anyone."
+    )
+
+    assert otp.extract_otp(text) == "654321"
+
+
+def test_extracts_sign_in_code_when_code_warning_is_separate_from_digits():
+    text = (
+        "Capital One won't call you for this code. Use 1234567890 to sign-in. "
+        "Please don't share it with anyone."
+    )
+
+    assert otp.extract_otp(text) == "1234567890"
+
+
 def test_ignores_order_number_even_with_code_word_in_product_copy():
     text = "Your order code 123456 shipped and tracking will update soon."
 

@@ -37,6 +37,7 @@ CODE_PATTERNS = [
     re.compile(r"(?i)\b(?:is|:|=)\D{0,10}((?<!\d)(?:\d[ -]?){4,10}(?!\d))\b"),
     re.compile(r"(?i)\b(?:otp|code|passcode|verification code|security code|authentication code|login code)\D{0,120}((?<!\d)(?:\d[ -]?){4,10}(?!\d))\b"),
     re.compile(r"(?i)\b((?<!\d)(?:\d[ -]?){4,10}(?!\d))\D{0,30}(?:is|as)?\D{0,10}(?:your|the)?\D{0,10}(?:otp|code|passcode|verification)\b"),
+    re.compile(r"(?i)\b((?<!\d)(?:\d[ -]?){4,10}(?!\d))\D{0,40}(?:to\s+)?(?:sign[- ]?in|log[- ]?in|login)\b"),
 ]
 FALLBACK_CODE_RE = re.compile(r"(?<!\d)((?:\d[ -]?){4,10})(?!\d)")
 
@@ -116,7 +117,7 @@ def extract_otp(text: str) -> str | None:
                 end = min(len(compact), match.end() + 30)
                 context = compact[start:end]
                 # Let explicit OTP/code contexts win, but reject obvious commerce-ish numbers.
-                if BAD_CONTEXT_RE.search(context) and not re.search(r"(?i)\b(otp|verification|auth|passcode|security code)\b", context):
+                if BAD_CONTEXT_RE.search(context) and not re.search(r"(?i)\b(otp|verification|auth|passcode|security code|sign[- ]?in|log[- ]?in|login)\b", context):
                     continue
                 return code
 

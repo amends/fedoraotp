@@ -1,0 +1,315 @@
+#!/usr/bin/env /usr/bin/python3
+"""
+Local OTP clipboard listener for Fedora/GNOME.
+
+Watches desktop notifications on the session D-Bus, extracts likely one-time
+codes, and copies the code to the Wayland/X clipboard. Designed to be run as a
+user systemd service; no root, no network, no persistent OTP logging.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import selectors
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+APP_NAME = "OTP Clipboard"
+STATE_DIR = Path.home() / ".local" / "state" / "otp-clipboard"
+STATUS_FILE = STATE_DIR / "status.json"
+LOG_FILE = STATE_DIR / "events.log"
+
+# Favor messages that explicitly look like login/security/verification text.
+KEYWORD_RE = re.compile(
+    r"(?i)\b(otp|one[- ]?time|verification|verify|auth(?:entication)?|"
+    r"security|login|sign[- ]?in|2fa|two[- ]?factor|code|passcode)\b"
+)
+
+# Common OTP shapes: 4-8 digits, optionally separated by space/dash.
+CODE_PATTERNS = [
+    re.compile(r"(?i)\b(?:otp|code|passcode|verification code|security code|authentication code)\D{0,60}((?<!\d)(?:\d[ -]?){4,8}(?!\d))\b"),
+    re.compile(r"(?i)\b((?<!\d)(?:\d[ -]?){4,8}(?!\d))\D{0,30}(?:is|as)?\D{0,10}(?:your|the)?\D{0,10}(?:otp|code|passcode|verification)\b"),
+]
+FALLBACK_CODE_RE = re.compile(r"(?<!\d)((?:\d[ -]?){4,8})(?!\d)")
+
+# Avoid obvious non-OTP numeric chunks.
+BAD_CONTEXT_RE = re.compile(r"(?i)\b(order|tracking|invoice|total|amount|price|phone|call|address|zip)\b")
+
+
+def now() -> float:
+    return time.time()
+
+
+def masked(code: str) -> str:
+    if len(code) <= 2:
+        return "•" * len(code)
+    return "•" * (len(code) - 2) + code[-2:]
+
+
+def ensure_state() -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def write_status(**updates) -> None:
+    ensure_state()
+    data = {
+        "running": True,
+        "pid": os.getpid(),
+        "heartbeat": now(),
+        "last_code_masked": None,
+        "last_copy_time": None,
+        "last_source": None,
+        "last_error": None,
+    }
+    if STATUS_FILE.exists():
+        try:
+            old = json.loads(STATUS_FILE.read_text())
+            if isinstance(old, dict):
+                data.update(old)
+        except Exception:
+            pass
+    data.update(updates)
+    data["running"] = True
+    data["pid"] = os.getpid()
+    data["heartbeat"] = now()
+    tmp = STATUS_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
+    tmp.replace(STATUS_FILE)
+
+
+def mark_stopped(signum: int | None = None, frame=None) -> None:
+    try:
+        write_status(running=False, heartbeat=now())
+    finally:
+        sys.exit(0)
+
+
+def log_event(message: str) -> None:
+    ensure_state()
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    with LOG_FILE.open("a", encoding="utf-8") as f:
+        f.write(f"{stamp} {message}\n")
+
+
+def normalize_code(raw: str) -> str:
+    return re.sub(r"\D", "", raw)
+
+
+def extract_otp(text: str) -> str | None:
+    compact = " ".join(text.split())
+    if not KEYWORD_RE.search(compact):
+        return None
+
+    for pat in CODE_PATTERNS:
+        for match in pat.finditer(compact):
+            code = normalize_code(match.group(1))
+            if 4 <= len(code) <= 8:
+                start = max(0, match.start() - 30)
+                end = min(len(compact), match.end() + 30)
+                context = compact[start:end]
+                # Let explicit OTP/code contexts win, but reject obvious commerce-ish numbers.
+                if BAD_CONTEXT_RE.search(context) and not re.search(r"(?i)\b(otp|verification|auth|passcode|security code)\b", context):
+                    continue
+                return code
+
+    # Fallback for real-world phrasings like "OTP for 2310990533 is 4279".
+    # Only runs after keyword gating, and ignores substrings embedded in longer numbers.
+    candidates: list[tuple[int, str]] = []
+    for match in FALLBACK_CODE_RE.finditer(compact):
+        code = normalize_code(match.group(1))
+        if 4 <= len(code) <= 8:
+            start = max(0, match.start() - 30)
+            end = min(len(compact), match.end() + 30)
+            context = compact[start:end]
+            if BAD_CONTEXT_RE.search(context) and not re.search(r"(?i)\b(otp|verification|auth|passcode|security code)\b", context):
+                continue
+            candidates.append((match.start(), code))
+    if candidates:
+        keyword_positions = [m.start() for m in KEYWORD_RE.finditer(compact)] or [0]
+        # Prefer a code after a keyword; otherwise nearest candidate.
+        def score(item: tuple[int, str]) -> tuple[int, int]:
+            pos, _ = item
+            after = [pos - k for k in keyword_positions if pos >= k]
+            if after:
+                return (0, min(after))
+            return (1, min(abs(pos - k) for k in keyword_positions))
+        return min(candidates, key=score)[1]
+    return None
+
+
+STRING_LINE_RE = re.compile(r'^\s+string "(.*)"$')
+METHOD_LINE_RE = re.compile(r"method call .*interface=org\.freedesktop\.Notifications; member=Notify")
+
+
+def unescape_dbus_string(s: str) -> str:
+    # dbus-monitor uses C-ish escaping for quotes/backslashes. JSON decoding is
+    # a simple robust way to unescape after restoring the outer quotes.
+    try:
+        return json.loads('"' + s + '"')
+    except Exception:
+        return s.replace(r'\"', '"').replace(r"\\", "\\")
+
+
+def parse_notify_block(lines: list[str]) -> dict[str, str] | None:
+    strings: list[str] = []
+    for line in lines:
+        m = STRING_LINE_RE.match(line.rstrip("\n"))
+        if m:
+            strings.append(unescape_dbus_string(m.group(1)))
+    # Notify(app_name, replaces_id, app_icon, summary, body, actions, hints, expire_timeout)
+    if len(strings) < 4:
+        return None
+    return {
+        "app": strings[0] if len(strings) > 0 else "",
+        "summary": strings[2] if len(strings) > 2 else "",
+        "body": strings[3] if len(strings) > 3 else "",
+    }
+
+
+def copy_to_clipboard(code: str) -> None:
+    env = os.environ.copy()
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    env.setdefault("WAYLAND_DISPLAY", "wayland-0")
+    env.setdefault("DISPLAY", ":0")
+
+    if shutil_which("wl-copy"):
+        subprocess.run(["wl-copy", code], input=b"", env=env, check=True, timeout=5)
+        return
+    if shutil_which("xclip"):
+        subprocess.run(["xclip", "-selection", "clipboard"], input=code.encode(), env=env, check=True, timeout=5)
+        return
+    if shutil_which("xsel"):
+        subprocess.run(["xsel", "--clipboard", "--input"], input=code.encode(), env=env, check=True, timeout=5)
+        return
+    raise RuntimeError("No clipboard command found; install wl-clipboard")
+
+
+def shutil_which(name: str) -> str | None:
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        candidate = Path(directory) / name
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+def maybe_notify(message: str) -> None:
+    if shutil_which("notify-send"):
+        try:
+            subprocess.run(["notify-send", "-a", APP_NAME, "OTP copied", message], timeout=3)
+        except Exception:
+            pass
+
+
+def run_monitor(test_once: bool = False) -> int:
+    ensure_state()
+    signal.signal(signal.SIGTERM, mark_stopped)
+    signal.signal(signal.SIGINT, mark_stopped)
+    write_status(last_error=None)
+
+    cmd = ["dbus-monitor", "--session", "interface='org.freedesktop.Notifications',member='Notify'"]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    log_event(f"started pid={os.getpid()} dbus_monitor_pid={proc.pid}")
+
+    current: list[str] = []
+    last_code = None
+    last_code_at = 0.0
+    last_heartbeat = 0.0
+
+    try:
+        assert proc.stdout is not None
+        sel = selectors.DefaultSelector()
+        sel.register(proc.stdout, selectors.EVENT_READ)
+        while proc.poll() is None:
+            t = now()
+            if t - last_heartbeat > 5:
+                write_status(last_error=None)
+                last_heartbeat = t
+
+            events = sel.select(timeout=1.0)
+            if not events:
+                continue
+            line = proc.stdout.readline()
+            if line == "":
+                break
+
+            if METHOD_LINE_RE.search(line):
+                if current:
+                    copied = handle_block(current, last_state=[last_code, last_code_at])
+                    if copied:
+                        last_code, last_code_at = copied
+                    if test_once and copied:
+                        return 0
+                current = [line]
+            elif current:
+                current.append(line)
+
+        if current:
+            handle_block(current, last_state=[last_code, last_code_at])
+    except Exception as e:
+        write_status(last_error=str(e))
+        log_event(f"error {e!r}")
+        raise
+    finally:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    return proc.wait()
+
+
+def handle_block(lines: list[str], last_state: list) -> tuple[str, float] | None:
+    info = parse_notify_block(lines)
+    if not info:
+        return None
+    app = info.get("app", "")
+    summary = info.get("summary", "")
+    body = info.get("body", "")
+    if app == APP_NAME:
+        return None
+    text = f"{app}\n{summary}\n{body}"
+    code = extract_otp(text)
+    if not code:
+        return None
+
+    # Duplicate guard: the same notification often appears twice via GNOME Shell/GSConnect.
+    previous_code, previous_at = last_state[0], float(last_state[1] or 0)
+    if previous_code == code and now() - previous_at < 10:
+        return None
+
+    copy_to_clipboard(code)
+    ts = now()
+    code_mask = masked(code)
+    write_status(
+        last_code_masked=code_mask,
+        last_copy_time=ts,
+        last_source=(app or summary or "notification")[:80],
+        last_error=None,
+    )
+    last_state[0] = code
+    last_state[1] = ts
+    log_event(f"copied code={code_mask} source={app!r} summary={summary!r}")
+    maybe_notify(f"Copied {code_mask} from {app or summary or 'notification'}")
+    return (code, ts)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Copy OTPs from GNOME desktop notifications to clipboard")
+    parser.add_argument("--test-once", action="store_true", help="Exit after first copied OTP; useful for validation")
+    parser.add_argument("--extract", metavar="TEXT", help="Print extracted OTP from text and exit")
+    args = parser.parse_args()
+    if args.extract is not None:
+        code = extract_otp(args.extract)
+        if code:
+            print(code)
+            return 0
+        return 1
+    return run_monitor(test_once=args.test_once)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

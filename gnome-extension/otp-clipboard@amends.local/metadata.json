@@ -1,0 +1,7 @@
+{
+  "uuid": "otp-clipboard@amends.local",
+  "name": "OTP Clipboard Indicator",
+  "description": "Top-bar status indicator for the local OTP clipboard listener service.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "version": 1
+}

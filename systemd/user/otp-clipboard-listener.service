@@ -1,0 +1,20 @@
+[Unit]
+Description=Copy OTP codes from GNOME notifications to clipboard
+Documentation=man:dbus-monitor(1)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/otp-clipboard-listener
+Restart=on-failure
+RestartSec=3
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+
+# Privacy/safety: no network is needed; keep the service user-scoped.
+PrivateTmp=true
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=default.target

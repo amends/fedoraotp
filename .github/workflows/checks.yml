@@ -1,0 +1,23 @@
+name: checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  shell-and-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python syntax
+        run: python3 -m py_compile bin/otp-clipboard-listener
+      - name: Shell syntax
+        run: bash -n install.sh scripts/uninstall.sh
+      - name: Extractor smoke tests
+        run: |
+          test "$(./bin/otp-clipboard-listener --extract 'Your verification code is 123456')" = "123456"
+          test "$(./bin/otp-clipboard-listener --extract 'OTP for 2310990533 is 4279')" = "4279"
+          if ./bin/otp-clipboard-listener --extract 'Your order 123456 shipped'; then
+            echo 'false positive on order notification' >&2
+            exit 1
+          fi

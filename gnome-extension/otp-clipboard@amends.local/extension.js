@@ -1,6 +1,8 @@
 import St from 'gi://St';
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
+import GObject from 'gi://GObject';
+import Clutter from 'gi://Clutter';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -32,13 +34,14 @@ function runCommand(argv) {
     }
 }
 
+const OtpIndicator = GObject.registerClass(
 class OtpIndicator extends PanelMenu.Button {
-    constructor() {
-        super(0.0, 'OTP Clipboard Indicator');
+    _init() {
+        super._init(0.0, 'OTP Clipboard Indicator');
 
         this._box = new St.BoxLayout({style_class: 'panel-status-menu-box'});
-        this._label = new St.Label({text: 'OTP', y_align: 2});
-        this._dot = new St.Label({text: '●', y_align: 2, style: 'color: #f59e0b; padding-left: 4px;'});
+        this._label = new St.Label({text: 'OTP', y_align: Clutter.ActorAlign.CENTER});
+        this._dot = new St.Label({text: '●', y_align: Clutter.ActorAlign.CENTER, style: 'color: #f59e0b; padding-left: 4px;'});
         this._box.add_child(this._label);
         this._box.add_child(this._dot);
         this.add_child(this._box);
@@ -93,10 +96,10 @@ class OtpIndicator extends PanelMenu.Button {
 
         if (status?.last_error) {
             this._errorItem.label.text = `Error: ${status.last_error}`;
-            this._errorItem.actor.visible = true;
+            this._errorItem.visible = true;
         } else {
             this._errorItem.label.text = '';
-            this._errorItem.actor.visible = false;
+            this._errorItem.visible = false;
         }
     }
 
@@ -108,6 +111,7 @@ class OtpIndicator extends PanelMenu.Button {
         super.destroy();
     }
 }
+);
 
 export default class OtpClipboardIndicatorExtension extends Extension {
     enable() {
